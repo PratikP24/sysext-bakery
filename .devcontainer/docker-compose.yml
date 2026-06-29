@@ -1,0 +1,12 @@
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspace
+      - /var/run/docker.sock:/var/run/docker-host.sock
+    command: sleep infinity
+    stdin_open: true
+    tty: true
+    network_mode: "host"

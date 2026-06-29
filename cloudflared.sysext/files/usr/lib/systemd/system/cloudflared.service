@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Tunnel (cloudflared)
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Operator creates /etc/cloudflared/config.yml post-boot (cloudflared tunnel login).
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

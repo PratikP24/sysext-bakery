@@ -1,0 +1,24 @@
+{
+  "name": "Flatcar Dev Container",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "devuser",
+  "features": {},
+  "customizations": {
+    "vscode": {
+      "extensions": [],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  "postCreateCommand": "echo 'Dev container ready. Volume mounted at /workspace'",
+  "mounts": [
+		"source=/var/run/docker.sock,target=/var/run/docker-host.sock,type=bind"
+	],
+	"containerEnv": {
+		"DOCKER_HOST": "unix:///var/run/docker-host.sock",
+		"HOST_WORKSPACE_PATH": "${localWorkspaceFolder}"
+	},
+}

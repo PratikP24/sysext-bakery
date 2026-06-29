@@ -110,3 +110,6 @@ tilde 1.1.2
 tilde latest
 
 opkssh latest
+
+zerotier latest
+cloudflared latest

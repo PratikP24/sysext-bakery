@@ -1,0 +1,16 @@
+[Unit]
+Description=ZeroTier One VPN Service
+Documentation=https://docs.zerotier.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zerotier-one
+Restart=on-failure
+RestartSec=5
+# State lives on the writable root, persisted across reboots / A/B updates.
+StateDirectory=zerotier-one
+
+[Install]
+WantedBy=multi-user.target

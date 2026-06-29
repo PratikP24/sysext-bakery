@@ -1,0 +1,410 @@
+# build-custom-sysext.yaml
+#
+# Builds and publishes zerotier and cloudflared sysext images for this fork of
+# flatcar/sysext-bakery.  Mirrors the structure of the upstream release.yaml
+# (release_dispatcher -> create-release -> update-extension-metadata ->
+# update-global-metadata) but scoped to only the two custom extensions.
+#
+# Three trigger modes:
+#   1. Scheduled (weekly) – release_dispatcher.sh reads release_build_versions.txt
+#      and builds any extension:version pairs whose GitHub release does not yet
+#      exist.  List each extension as "zerotier latest" / "cloudflared latest"
+#      in that file so the dispatcher auto-resolves the current upstream version.
+#   2. Manual (workflow_dispatch) – supply an extension name and explicit version
+#      to force-build a specific release right now.
+#   3. Tag push – pushing a tag matching "zerotier-*" or "cloudflared-*" triggers
+#      a build for that extension:version pair directly.
+#
+# OPERATOR CHECKLIST (things you must configure in your fork):
+#   A. release_build_versions.txt  – ensure it contains at least:
+#        zerotier latest
+#        cloudflared latest
+#   B. lib/libbakery.sh  – change the "bakery" variable to point at YOUR fork:
+#        bakery="<your-github-username>/sysext-bakery"
+#      The dispatcher uses this variable when calling github_release_exists().
+#   C. bakery_hub (.env or lib/libbakery.sh) – if you intend to serve sysupdate
+#      .conf files via a URL-rewrite proxy set bakery_hub to your host; if you
+#      serve releases flat from GitHub Releases you can leave the default and
+#      adjust the Path= in the .conf files on the device side.
+#   D. Repository secret GITHUB_TOKEN is automatically provided by GitHub Actions;
+#      no extra secrets are required for public forks.
+
+name: Build and publish custom sysext images (zerotier + cloudflared)
+
+on:
+  # ── Trigger 1: weekly schedule ─────────────────────────────────────────────
+  # Runs every Monday at 06:00 UTC.  release_dispatcher.sh compares
+  # release_build_versions.txt entries against existing GitHub Releases and
+  # only schedules builds for new versions — identical to upstream behaviour.
+  schedule:
+    - cron: '0 6 * * 1'
+
+  # ── Trigger 2: manual run ───────────────────────────────────────────────────
+  # Useful to (re)build a specific version or to test the workflow after fork setup.
+  workflow_dispatch:
+    inputs:
+      extension:
+        description: 'Extension name to build (zerotier or cloudflared)'
+        type: choice
+        options:
+          - zerotier
+          - cloudflared
+        required: true
+      version:
+        description: 'Version string, e.g. 1.14.2 (zerotier) or 2026.6.1 (cloudflared)'
+        type: string
+        required: true
+      branch:
+        description: 'Branch to check out (default: main)'
+        type: string
+        required: false
+        default: 'main'
+
+  # ── Trigger 3: version tag push ─────────────────────────────────────────────
+  # Push a tag like "zerotier-1.14.2" or "cloudflared-2026.6.1" to fire a
+  # targeted single-extension build without touching release_build_versions.txt.
+  push:
+    tags:
+      - 'zerotier-*'
+      - 'cloudflared-*'
+
+# ---------------------------------------------------------------------------
+# Job 1: list-builds
+#
+# Identical to upstream release.yaml's list-builds job.
+# Runs release_dispatcher.sh which:
+#   - reads release_build_versions.txt
+#   - resolves "latest" by calling ./bakery.sh list <ext> --latest true
+#   - compares against existing GitHub Releases in this fork
+#   - emits a JSON matrix of "extension:version" pairs that need building
+#
+# When triggered by workflow_dispatch or a tag push the matrix is overridden
+# in-job so the dispatcher output is bypassed — see the "override_matrix" step.
+# ---------------------------------------------------------------------------
+jobs:
+  list-builds:
+    runs-on: ubuntu-24.04
+    outputs:
+      builds: ${{ steps.finalize.outputs.builds }}
+      extensions: ${{ steps.finalize.outputs.extensions }}
+    steps:
+      - name: Check out the bakery fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || 'main' }}
+          path: bakery
+
+      - name: Install prerequisites
+        # Same apt packages as upstream release.yaml — required by dispatcher
+        # and bakery.sh list (curl for GitHub API, jq for JSON, squashfs-tools /
+        # erofs-utils for generate.sh path checking).
+        run: |
+          set -euxo pipefail
+          sudo apt update -qq && sudo apt install -yqq \
+            curl \
+            jq \
+            squashfs-tools \
+            xz-utils \
+            erofs-utils
+
+      # ── Path A: scheduled / automatic dispatch ──────────────────────────────
+      # Calls release_dispatcher.sh exactly as upstream does.  The script writes
+      # "builds=<json>" and "extensions=<json>" to $GITHUB_OUTPUT.
+      - name: Discover new versions via release_dispatcher.sh
+        id: dispatcher
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pushd bakery
+          ./release_dispatcher.sh
+
+      # ── Path B: manual workflow_dispatch ───────────────────────────────────
+      # Bypass the dispatcher and emit exactly the one extension:version the
+      # operator typed in.  Format mirrors dispatcher output so downstream jobs
+      # are unchanged.
+      - name: Build matrix from manual input
+        id: manual
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          ext="${{ inputs.extension }}"
+          ver="${{ inputs.version }}"
+          echo "builds=$(jq -rcn --args '$ARGS.positional' "${ext}:${ver}")" >> "$GITHUB_OUTPUT"
+          echo "extensions=$(jq -rcn --args '$ARGS.positional' "${ext}")"     >> "$GITHUB_OUTPUT"
+
+      # ── Path C: version-tag push ────────────────────────────────────────────
+      # Tag format is "<extension>-<version>" (e.g. "zerotier-1.14.2").
+      # Split on the first hyphen to recover extension and version.
+      - name: Build matrix from pushed tag
+        id: tag
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME}"         # e.g.  zerotier-1.14.2
+          ext="${tag%%-*}"                  # zerotier
+          ver="${tag#*-}"                   # 1.14.2
+          echo "builds=$(jq -rcn --args '$ARGS.positional' "${ext}:${ver}")" >> "$GITHUB_OUTPUT"
+          echo "extensions=$(jq -rcn --args '$ARGS.positional' "${ext}")"     >> "$GITHUB_OUTPUT"
+
+      # ── Merge outputs from whichever path ran ──────────────────────────────
+      # Exactly one of the three steps above will have written to $GITHUB_OUTPUT.
+      # This step normalises the output into a single canonical set of values so
+      # the downstream jobs only need to reference steps.finalize.outputs.*.
+      - name: Finalise build matrix
+        id: finalize
+        run: |
+          # Pull from whichever step populated GITHUB_OUTPUT; default to empty.
+          builds_dispatcher="${{ steps.dispatcher.outputs.builds }}"
+          builds_manual="${{ steps.manual.outputs.builds }}"
+          builds_tag="${{ steps.tag.outputs.builds }}"
+          extensions_dispatcher="${{ steps.dispatcher.outputs.extensions }}"
+          extensions_manual="${{ steps.manual.outputs.extensions }}"
+          extensions_tag="${{ steps.tag.outputs.extensions }}"
+
+          builds="${builds_dispatcher:-${builds_manual:-${builds_tag:-[]}}}"
+          extensions="${extensions_dispatcher:-${extensions_manual:-${extensions_tag:-[]}}}"
+
+          echo "builds=${builds}"     >> "$GITHUB_OUTPUT"
+          echo "extensions=${extensions}" >> "$GITHUB_OUTPUT"
+          echo "Final builds matrix : ${builds}"
+          echo "Final extensions list: ${extensions}"
+
+  # ---------------------------------------------------------------------------
+  # Job 2: create-release
+  #
+  # One parallel runner per "extension:version" pair in the matrix.  Mirrors
+  # upstream release.yaml exactly: installs deps, calls release.sh, then uses
+  # softprops/action-gh-release to publish the GitHub Release with *.raw,
+  # SHA256SUMS, *.conf and the build log.
+  #
+  # Key differences from upstream:
+  #   - docker/setup-qemu-action is included (zerotier builds inside a Debian
+  #     container via docker run; ubuntu-24.04 runners have Docker pre-installed
+  #     so no extra setup is needed beyond QEMU for potential cross-builds).
+  #   - continue-on-error: true mirrors upstream so a transient failure does not
+  #     block the metadata update jobs.
+  # ---------------------------------------------------------------------------
+  create-release:
+    needs: list-builds
+    if: ${{ needs.list-builds.outputs.builds != '[]' && needs.list-builds.outputs.builds != '' }}
+    strategy:
+      matrix:
+        release: ${{ fromJson(needs.list-builds.outputs.builds) }}
+    # A transient failure (network blip, upstream tarball not yet propagated)
+    # is retried automatically on the next scheduled run.  Letting other matrix
+    # cells and the metadata jobs continue is intentional — same as upstream.
+    continue-on-error: true
+
+    runs-on: ubuntu-24.04
+    permissions:
+      # Required by release.sh (git tag + git push) and softprops/action-gh-release.
+      contents: write
+
+    steps:
+      # QEMU lets the Debian container run with --platform linux/amd64 even on
+      # an arm64 runner, and would enable arm64 cross-builds in future.
+      # zerotier's create.sh calls `docker run ... --platform linux/${img_arch}`.
+      - name: Set up QEMU for cross-platform container builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Check out the bakery fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || 'main' }}
+          path: bakery
+          # release.sh calls `git tag` and `git push`; a full clone is needed.
+          fetch-depth: 0
+
+      - name: Configure git identity for release.sh tag push
+        # release.sh calls `git tag <ext>-<version> --force && git push origin ...`
+        # without this the push will succeed but the tag author will be blank,
+        # which can confuse some GitHub UI elements.
+        run: |
+          git -C bakery config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C bakery config user.name  "github-actions[bot]"
+
+      - name: Install prerequisites
+        # Identical package list to upstream release.yaml.
+        run: |
+          set -euxo pipefail
+          sudo apt update -qq && sudo apt install -yqq \
+            curl \
+            jq \
+            squashfs-tools \
+            xz-utils \
+            erofs-utils
+
+      # Override lib/libbakery.sh defaults so release_meta.sh and list-bakery
+      # look up releases in THIS fork rather than flatcar/sysext-bakery.
+      # OPERATOR: if you also run a URL-rewrite proxy, add bakery_hub= here too.
+      # The .env file (if present in the repo root) is sourced by libbakery.sh
+      # automatically — you can also store these overrides there.
+      - name: Write bakery .env override
+        run: |
+          repo="${{ github.repository }}"   # e.g.  myuser/sysext-bakery
+          echo "bakery=\"${repo}\""  > bakery/.env
+          # OPERATOR: uncomment and set bakery_hub if you run a URL-rewrite proxy:
+          echo "bakery_hub=\"pratikp24.github.io/sysext-bakery\"" >> bakery/.env
+
+      # Call release.sh with the "extension:version" token from the matrix.
+      # release.sh:
+      #   1. Calls ./bakery.sh create <ext> <ver> --arch x86-64 --sysupdate true
+      #   2. Calls ./bakery.sh create <ext> <ver> --arch arm64  --sysupdate true
+      #   3. Appends each arch's SHA256SUMS.<ext> to SHA256SUMS
+      #   4. Writes Release.md
+      #   5. Sets output: tag=<ext>-<ver>
+      #   6. git tag + git push the version tag
+      #
+      # NOTE: zerotier's populate_sysext_root() calls `docker run` to compile
+      # inside debian:bookworm.  Docker is available on ubuntu-24.04 runners by
+      # default — no extra setup step is needed beyond the QEMU action above.
+      - name: Build sysext image(s) via release.sh
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pushd bakery
+          ./release.sh ${{ matrix.release }}
+
+      # Publish the GitHub Release.  Asset list matches upstream release.yaml.
+      # softprops/action-gh-release updates an existing release if the tag
+      # already exists, which is safe because release.sh uses --force on the tag.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          make_latest: false
+          tag_name: ${{ steps.build.outputs.tag }}
+          body_path: bakery/Release.md
+          files: |
+            bakery/SHA256SUMS
+            bakery/*.raw
+            bakery/*.conf
+            bakery/*-build.log
+
+  # ---------------------------------------------------------------------------
+  # Job 3: update-extension-metadata
+  #
+  # Per-extension metadata release (tag = <extension>, e.g. "zerotier").
+  # Calls release_meta.sh <extension> which:
+  #   - Iterates all bakery releases for that extension (./bakery.sh list-bakery)
+  #   - Downloads SHA256SUMS + *.conf from each version release
+  #   - Concatenates into one SHA256SUMS covering all known versions
+  #   - Writes Release.md
+  #   - git tag -f <extension> && git push --force
+  # The resulting release is what systemd-sysupdate reads to find the latest hash.
+  # ---------------------------------------------------------------------------
+  update-extension-metadata:
+    needs: [list-builds, create-release]
+    if: ${{ needs.list-builds.outputs.extensions != '[]' && needs.list-builds.outputs.extensions != '' }}
+    strategy:
+      matrix:
+        extension: ${{ fromJson(needs.list-builds.outputs.extensions) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the bakery fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || 'main' }}
+          path: bakery
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git -C bakery config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C bakery config user.name  "github-actions[bot]"
+
+      - name: Install prerequisites
+        run: |
+          set -euxo pipefail
+          sudo apt update -qq && sudo apt install -yqq \
+            curl \
+            jq \
+            squashfs-tools \
+            xz-utils \
+            erofs-utils
+
+      - name: Write bakery .env override
+        run: |
+          repo="${{ github.repository }}"
+          echo "bakery=\"${repo}\"" > bakery/.env
+
+      - name: Fetch extension release metadata via release_meta.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pushd bakery
+          ./release_meta.sh ${{ matrix.extension }}
+
+      # The metadata release tag equals the extension name (e.g. "zerotier").
+      # It carries SHA256SUMS (all versions) and *.conf (sysupdate config).
+      - name: Publish extension metadata release
+        uses: softprops/action-gh-release@v2
+        with:
+          make_latest: false
+          tag_name: ${{ matrix.extension }}
+          body_path: bakery/Release.md
+          files: |
+            bakery/SHA256SUMS
+            bakery/*.conf
+
+  # ---------------------------------------------------------------------------
+  # Job 4: update-global-metadata
+  #
+  # Global SHA256SUMS release (tag = "SHA256SUMS").
+  # Calls release_meta.sh with no argument, which aggregates SHA256SUMS from
+  # every extension known to `./bakery.sh list --plain true`.
+  # This is the top-level catalogue that a custom sysupdate server can serve.
+  # ---------------------------------------------------------------------------
+  update-global-metadata:
+    needs: update-extension-metadata
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the bakery fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || 'main' }}
+          path: bakery
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git -C bakery config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C bakery config user.name  "github-actions[bot]"
+
+      - name: Install prerequisites
+        run: |
+          set -euxo pipefail
+          sudo apt update -qq && sudo apt install -yqq \
+            curl \
+            jq \
+            squashfs-tools \
+            xz-utils \
+            erofs-utils
+
+      - name: Write bakery .env override
+        run: |
+          repo="${{ github.repository }}"
+          echo "bakery=\"${repo}\"" > bakery/.env
+
+      - name: Fetch global metadata via release_meta.sh (no args)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pushd bakery
+          ./release_meta.sh
+
+      # make_latest: true mirrors upstream — the global SHA256SUMS release is
+      # the one shown as "Latest" on the fork's Releases page.
+      - name: Publish global SHA256SUMS release
+        uses: softprops/action-gh-release@v2
+        with:
+          make_latest: true
+          tag_name: SHA256SUMS
+          body_path: bakery/Release.md
+          files: |
+            bakery/SHA256SUMS
