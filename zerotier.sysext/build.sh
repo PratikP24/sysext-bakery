@@ -20,17 +20,16 @@ apt-get install -y --no-install-recommends \
   build-essential clang make pkg-config \
   libssl-dev curl ca-certificates tar
 
-# 1. Download the explicit compiled x86_64 rustup installer binary directly from the source assets CDN
-curl -fsSL --retry 3 --retry-delay 5 \
-  -o /tmp/rustup-init \
-  https://rust-lang.org
+# 1. Install normal system toolchain packages (NO raw package-manager cargo)
+apt-get update && apt-get install -y --no-install-recommends \
+  build-essential clang make pkg-config \
+  libssl-dev curl ca-certificates tar
 
-# 2. Grant execution rights and run the setup flags directly without standard shell wrapper pipes
-chmod +x /tmp/rustup-init
-/tmp/rustup-init -y --default-toolchain stable --profile minimal
+# 2. Download and install a modern, official Rust toolchain via rustup
+# FIX: Added -L flag so curl follows the CDN redirect instead of catching HTML
+curl -fsSL --proto '=https' --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 
-# 3. Clean up the installer binary and map the freshly minted environment paths
-rm /tmp/rustup-init
+# 3. Explicitly source Cargo into the environment path so the shell can find it
 export PATH="/root/.cargo/bin:$PATH"
 
 cd /tmp
