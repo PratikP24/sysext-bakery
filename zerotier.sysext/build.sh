@@ -48,4 +48,4 @@ make -j"$(nproc)"
 make install DESTDIR=/install_root
 
 # Hand ownership of the produced tree back to the host build user.
-chown -R "${USER_GROUP}" /install_root/usr
+chown -R "${USER_GROUP}" /install_root
