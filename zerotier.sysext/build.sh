@@ -18,7 +18,11 @@ apt-get update
 # Minimal toolchain to compile ZeroTier One (GCC >= 8 / clang >= 5 required).
 apt-get install -y --no-install-recommends \
   build-essential clang make pkg-config \
-  libssl-dev curl ca-certificates tar cargo
+  libssl-dev curl ca-certificates tar
+
+# Install a modern, official Rust toolchain capable of reading Lockfile v4
+curl --proto '=https' --tlsv1.2 -sSf https://rustup.rs | sh -s -- -y --default-toolchain stable
+export PATH="/root/.cargo/bin:$PATH"
 
 cd /tmp
 # Build from the tagged GitHub source archive (no static binary is published).
