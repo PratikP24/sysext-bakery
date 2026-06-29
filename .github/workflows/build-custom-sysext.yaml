@@ -153,15 +153,23 @@ jobs:
         id: finalize
         run: |
           # Pull from whichever step populated GITHUB_OUTPUT; default to empty.
-          builds_dispatcher="${{ steps.dispatcher.outputs.builds }}"
-          builds_manual="${{ steps.manual.outputs.builds }}"
-          builds_tag="${{ steps.tag.outputs.builds }}"
-          extensions_dispatcher="${{ steps.dispatcher.outputs.extensions }}"
-          extensions_manual="${{ steps.manual.outputs.extensions }}"
-          extensions_tag="${{ steps.tag.outputs.extensions }}"
+          # builds_dispatcher="${{ steps.dispatcher.outputs.builds }}"
+          # builds_manual="${{ steps.manual.outputs.builds }}"
+          # builds_tag="${{ steps.tag.outputs.builds }}"
+          # extensions_dispatcher="${{ steps.dispatcher.outputs.extensions }}"
+          # extensions_manual="${{ steps.manual.outputs.extensions }}"
+          # extensions_tag="${{ steps.tag.outputs.extensions }}"
 
-          builds="${builds_dispatcher:-${builds_manual:-${builds_tag:-[]}}}"
-          extensions="${extensions_dispatcher:-${extensions_manual:-${extensions_tag:-[]}}}"
+          # Use GitHub Action context syntax to cleanly select the active value
+          builds='${{ steps.dispatcher.outputs.builds || steps.manual.outputs.builds || steps.tag.outputs.builds || '[]' }}'
+          extensions='${{ steps.dispatcher.outputs.extensions || steps.manual.outputs.extensions || steps.tag.outputs.extensions || '[]' }}'
+
+          # builds="${builds_dispatcher:-${builds_manual:-${builds_tag:-[]}}}"
+          # extensions="${extensions_dispatcher:-${extensions_manual:-${extensions_tag:-[]}}}"
+
+          # Fallback check if a step passed an empty string instead of null
+          if [ -z "$builds" ] || [ "$builds" = "null" ]; then builds="[]"; fi
+          if [ -z "$extensions" ] || [ "$extensions" = "null" ]; then extensions="[]"; fi
 
           echo "builds=${builds}"     >> "$GITHUB_OUTPUT"
           echo "extensions=${extensions}" >> "$GITHUB_OUTPUT"
