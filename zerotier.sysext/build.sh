@@ -20,15 +20,17 @@ apt-get install -y --no-install-recommends \
   build-essential clang make pkg-config \
   libssl-dev curl ca-certificates tar
 
-# Download the installer script safely to disk
-curl -fsSL --retry 3 --retry-delay 5 -o /tmp/rustup-init.sh https://rustup.rs
+# 1. Download the explicit compiled x86_64 rustup installer binary directly from the source assets CDN
+curl -fsSL --retry 3 --retry-delay 5 \
+  -o /tmp/rustup-init \
+  https://rust-lang.org
 
-# Make it executable and run it cleanly without shell pipes
-chmod +x /tmp/rustup-init.sh
-/tmp/rustup-init.sh -y --default-toolchain stable
+# 2. Grant execution rights and run the setup flags directly without standard shell wrapper pipes
+chmod +x /tmp/rustup-init
+/tmp/rustup-init -y --default-toolchain stable --profile minimal
 
-# Source the new binary path directly
-. "$HOME/.cargo/env"
+# 3. Clean up the installer binary and map the freshly minted environment paths
+rm /tmp/rustup-init
 export PATH="/root/.cargo/bin:$PATH"
 
 cd /tmp
