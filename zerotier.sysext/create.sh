@@ -51,7 +51,7 @@ function populate_sysext_root() {
   
   cp "${scriptroot}/zerotier.sysext/build.sh" .
   cp "${scriptroot}/zerotier.sysext/build.sh" "$(pwd)/build.sh"
-
+  chmod +x "$(pwd)/build.sh"
   ls -l "$(pwd)/build.sh"
 
   docker run --rm -i \
