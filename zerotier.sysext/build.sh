@@ -18,7 +18,7 @@ apt-get update
 # Minimal toolchain to compile ZeroTier One (GCC >= 8 / clang >= 5 required).
 apt-get install -y --no-install-recommends \
   build-essential clang make pkg-config \
-  libssl-dev curl ca-certificates tar
+  libssl-dev curl ca-certificates tar cargo
 
 cd /tmp
 # Build from the tagged GitHub source archive (no static binary is published).
