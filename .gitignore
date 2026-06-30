@@ -17,3 +17,5 @@ tags
 *test.json
 *test.yaml
 *flatcar_production_*
+
+!docs/extensions/**/*
